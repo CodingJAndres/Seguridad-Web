@@ -34,7 +34,7 @@ pip install requests beautifulsoup4 lxml
 Ejecuta el script desde tu terminal o línea de comandos:
 
 ```bash
-python Escaneo_web.py
+python3 Escaneo_web.py
 ```
 
 ### Interacción con el Script
@@ -56,6 +56,3 @@ Cargando: [##################################################] 100% completado
 2024-10-01 15:49:35,104 - INFO - [-] Análisis completado. Resultados guardados en 'resultados_analisis.json'.
 ```
 
-## Notas Adicionales
-
-Asegúrate de tener permisos adecuados para realizar análisis de seguridad en los sitios web y servidores que desees investigar.
