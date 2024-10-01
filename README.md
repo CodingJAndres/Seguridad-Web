@@ -46,8 +46,8 @@ El script solicitará una URL para analizar y realizará un análisis de segurid
 Al ejecutar el script, la salida será similar a:
 
 ```
-[+] Ingrese la URL a analizar: https://www.comeek.co/
-2024-10-01 15:49:00,450 - INFO - [-] Analizando la página: https://www.comeek.co/
+[+] Ingrese la URL a analizar: https://mundomedia702.github.io/
+2024-10-01 15:49:00,450 - INFO - [-] Analizando la página: https://mundomedia702.github.io/
 Analizando: Inyección SQL
 Cargando: [##################################################] 100% completado
 Analizando: XSS
